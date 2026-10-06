@@ -8,6 +8,7 @@ Upgrade the Slik solution from .NET 5/.NET 6 to .NET 10 as a single, coordinated
 
 - The solution contains eight projects: `SlikCache`, `SlikSecurity`, `SlikCord`, the `SlikNode` example, and four unit/integration test projects.
 - Every project currently targets `net5.0;net6.0`.
+- `SlikCache` currently consumes `Slik.Security` as a NuGet package even though the `SlikSecurity` project is in the same solution.
 - The two packable libraries, `Slik.Cache` and `Slik.Security`, declare package version `2.0.1` and assembly/file version `2.0.1.0`.
 - Build and integration workflows install .NET 5 and .NET 6. Dockerfiles use .NET 6 SDK/runtime images; the Slik.Cord workflow also publishes separate 5.0 and 6.0 images.
 - The README describes .NET 5/6 support. NuGet package references use broad floating version ranges.
@@ -21,9 +22,10 @@ Perform an atomic, solution-wide transition to `net10.0`. Do not retain .NET 5 o
 1. **Project targets:** Change all eight project files to target only `net10.0`.
 2. **NuGet dependencies:** Update every direct package reference to the latest stable release available during implementation, pinning explicit stable versions rather than retaining floating ranges. Resolve any API or behavior changes required by the upgraded packages. Do not add unrelated refactoring or explicitly pin transitive packages unless a demonstrated restore/build issue requires it.
 3. **Library release metadata:** Set both `Slik.Cache` and `Slik.Security` package versions to `3.0.0`, reflecting the breaking removal of older target frameworks. Update their declared assembly and file versions from `2.0.1.0` to `3.0.0.0`.
-4. **CI:** Update each existing workflow to install/use the .NET 10 SDK, build/test the `net10.0` projects, and use a currently supported `setup-dotnet` action version. Preserve current workflow triggers and the separation between normal and manually/integration-triggered test workflows.
-5. **Containers:** Update both Dockerfiles to .NET 10 SDK/runtime images. Update the Slik.Cord workflow to publish and exercise the .NET 10 image with a `10.0` tag instead of building new 5.0/6.0 variants. Update SlikNode's Docker build to use .NET 10.
-6. **Documentation:** Update README framework claims and add a changelog entry describing the .NET 10-only target and package major-version change.
+4. **In-repository library dependency:** Replace `SlikCache`'s `Slik.Security` package reference with a project reference to `src/SlikSecurity/SlikSecurity.csproj`. This ensures the solution builds and tests against the in-repository 3.0.0 source before either NuGet package is published.
+5. **CI:** Update each existing workflow to install/use the .NET 10 SDK, build/test the `net10.0` projects, and use a currently supported `setup-dotnet` action version. Preserve current workflow triggers and the separation between normal and manually/integration-triggered test workflows.
+6. **Containers:** Update both Dockerfiles to .NET 10 SDK/runtime images. Update the Slik.Cord workflow to publish and exercise the .NET 10 image with a `10.0` tag instead of building new 5.0/6.0 variants. Update SlikNode's Docker build to use .NET 10.
+7. **Documentation:** Update README framework claims and add a changelog entry describing the .NET 10-only target and package major-version change.
 
 The intended consumer-visible behavior change is that the two NuGet packages ship only .NET 10 assets; consumers on older runtimes must stay on the prior package major version or upgrade their applications.
 
@@ -32,6 +34,7 @@ The intended consumer-visible behavior change is that the two NuGet packages shi
 - Restore and build the full solution in Release configuration using .NET 10.
 - Run the unit and integration test projects against `net10.0` in their existing workflow contexts; do not skip or silently downgrade failing tests.
 - Pack both library projects and verify each package is version `3.0.0` and contains only `net10.0` target assets.
+- Verify the packed `Slik.Cache` package declares a dependency on `Slik.Security` version `3.0.0`.
 - Build both Docker images and verify the Slik.Cord image starts for its integration workflow.
 - Confirm project, CI, Docker, and README configuration no longer advertises or builds .NET 5/6 targets.
 
