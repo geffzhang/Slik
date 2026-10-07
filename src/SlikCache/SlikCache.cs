@@ -1,12 +1,19 @@
-﻿using DotNext.Net.Cluster.Consensus.Raft;
+﻿using DotNext.IO;
+using DotNext.Net.Cluster.Consensus.Raft;
+using DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 using DotNext.Threading;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
+using System.Collections.Concurrent;
+using System.Buffers;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,113 +26,128 @@ namespace Slik.Cache
     /// <summary>
     /// Distributed Cache Implementation 
     /// </summary>
-    internal partial class SlikCache : PersistentState, IDistributedCache
+    internal partial class SlikCache : SimpleStateMachine, IDistributedCache
     {
         private readonly MemoryDistributedCache _internalCache;
-        private readonly HashSet<string> _slidingExpirations = new();
+        private readonly ConcurrentDictionary<string, byte> _slidingExpirations = new();
+        private readonly ConcurrentDictionary<string, byte> _keys = new();
         private readonly ILogger<SlikCache> _logger;
         private readonly NamedLockFactory _lockFactory = new();
         private Guid _recordBeingAppendedLocally;
-        private readonly ILoggerFactory _loggerFactory;
-        
+        private readonly int _recordsPerPartition;
+        private int _recordsSinceSnapshot;
+
         public TimeSpan CommitTimeout { get; set; } = TimeSpan.FromSeconds(10);
         public string LogLocation { get; }
 
-        #region PersistentState implementation
-
-        public SlikCache(IOptions<SlikOptions> options, ILoggerFactory loggerFactory) : base(
-            path: options.Value.DataFolder,
-            recordsPerPartition: options.Value.RecordsPerPartition,
-            configuration: options.Value.PersistentStateOptions)
+        public SlikCache(IOptions<SlikOptions> options, ILoggerFactory loggerFactory)
+            : this(options.Value, loggerFactory)
         {
-            _loggerFactory = loggerFactory;
-            _logger = _loggerFactory.CreateLogger<SlikCache>();
-            LogLocation = options.Value.DataFolder;
-            _internalCache = new MemoryDistributedCache(Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()), loggerFactory);            
         }
 
-        protected override async ValueTask ApplyAsync(LogEntry entry)
+        private SlikCache(SlikOptions options, ILoggerFactory loggerFactory)
+            : base(new DirectoryInfo(Path.Combine(options.DataFolder, "Cache-v6", "Snapshots")))
         {
-            _logger.LogDebug($"ApplyAsync started. Entry Length = {entry.Length}, timestamp = {entry.Timestamp}, snapshot = {entry.IsSnapshot}, term = {entry.Term}.");
+            if (options.RecordsPerPartition <= 0)
+                throw new ArgumentOutOfRangeException(nameof(options), "RecordsPerPartition must be positive.");
 
-            if (entry.Length > 0)
+            _recordsPerPartition = options.RecordsPerPartition;
+            LogLocation = Path.Combine(options.DataFolder, "Cache-v6");
+            _logger = loggerFactory.CreateLogger<SlikCache>();
+            _internalCache = new MemoryDistributedCache(Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()), loggerFactory);
+        }
+
+        protected override async ValueTask<bool> ApplyAsync(LogEntry entry, CancellationToken token)
+        {
+            if (!entry.TryGetPayload(out var payload) || payload.IsEmpty)
+                return false;
+
+            var record = JsonSerializer.Deserialize<CacheLogRecord>(payload.ToArray())
+                ?? throw new InvalidDataException($"Unable to deserialize cache log entry at index {entry.Index}.");
+
+            if (record.Id == _recordBeingAppendedLocally)
             {
-                _logger.LogDebug($"Deserializing log entry into dictionary. Length = {entry.Length}, timestamp = {entry.Timestamp}.");
+                await ApplyRecordAsync(record, token).ConfigureAwait(false);
+            }
+            else
+            {
+                using (await _lockFactory.AcquireWriteLockAsync(record.Key, token).ConfigureAwait(false))
+                    await ApplyRecordAsync(record, token).ConfigureAwait(false);
+            }
 
-                var deserializedEntry = await entry.DeserializeFromJsonAsync().ConfigureAwait(false);
+            _recordsSinceSnapshot++;
+            return _recordsSinceSnapshot >= _recordsPerPartition;
+        }
 
-                if (deserializedEntry is CacheLogRecord record)
-                {
-                    bool isSameRecord = record.Id.Equals(_recordBeingAppendedLocally);
-
-                    _logger.LogDebug(isSameRecord
-                        ? "Same record, no lock" // it's the case when a leader updates itself
-                        : "Not the same record, lock will be obtained");
-
-                    using (isSameRecord
-                        ? (AsyncLock.Holder?)null // no lock needed, it's the same record, we obtained a lock for it already and are inside of the code to apply it
-                        : await _lockFactory.AcquireWriteLockAsync(record.Key).ConfigureAwait(false))
-                    {
-                        string action = string.Empty;
-                        switch (record.Operation)
-                        {
-                            case CacheOperation.Update:
-                                await _internalCache
-                                    .SetAsync(record.Key, record.Value, record.Options ?? new())
-                                    .ConfigureAwait(false);
-                                action = "added to cache";
-                                break;
-                            case CacheOperation.Remove:
-                                await _internalCache
-                                    .RemoveAsync(record.Key)
-                                    .ConfigureAwait(false);
-                                action = "removed from cache";
-                                break;
-                            case CacheOperation.Refresh:
-                                await _internalCache
-                                    .RefreshAsync(record.Key)
-                                    .ConfigureAwait(false);
-                                action = "refreshed in cache";
-                                break;
-                        }
-                        _logger.LogDebug($"Record with key '{record.Key}' was {action}");
-                    }
-                }
-                else
-                    _logger.LogWarning($"Unknown type encountered while deserializing: '{deserializedEntry?.GetType()}'");
+        private async Task ApplyRecordAsync(CacheLogRecord record, CancellationToken token)
+        {
+            switch (record.Operation)
+            {
+                case CacheOperation.Update:
+                    await _internalCache.SetAsync(record.Key, record.Value, record.Options ?? new(), token).ConfigureAwait(false);
+                    _keys.TryAdd(record.Key, 0);
+                    if (record.Options?.SlidingExpiration is not null)
+                        _slidingExpirations.TryAdd(record.Key, 0);
+                    else
+                        _slidingExpirations.TryRemove(record.Key, out _);
+                    break;
+                case CacheOperation.Remove:
+                    await _internalCache.RemoveAsync(record.Key, token).ConfigureAwait(false);
+                    _keys.TryRemove(record.Key, out _);
+                    _slidingExpirations.TryRemove(record.Key, out _);
+                    break;
+                case CacheOperation.Refresh:
+                    await _internalCache.RefreshAsync(record.Key, token).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new InvalidDataException($"Unsupported cache operation '{record.Operation}'.");
             }
         }
 
-        #endregion
+        protected override async ValueTask PersistAsync(IAsyncBinaryWriter writer, CancellationToken token)
+        {
+            var keys = _keys.Keys.ToArray();
+            var records = new List<CacheLogRecord>(keys.Length);
+            foreach (string key in keys)
+            {
+                var value = await _internalCache.GetAsync(key, token).ConfigureAwait(false);
+                if (value is not null)
+                    records.Add(new CacheLogRecord(CacheOperation.Update, key, value));
+            }
+
+            await writer.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(records), token: token).ConfigureAwait(false);
+        }
+
+        protected override async ValueTask RestoreAsync(FileInfo snapshotFile, CancellationToken token)
+        {
+            var snapshot = await File.ReadAllBytesAsync(snapshotFile.FullName, token).ConfigureAwait(false);
+            var records = JsonSerializer.Deserialize<CacheLogRecord[]>(snapshot)
+                ?? throw new InvalidDataException($"Unable to deserialize cache snapshot '{snapshotFile.FullName}'.");
+
+            foreach (var record in records)
+                await ApplyRecordAsync(record, token).ConfigureAwait(false);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            await _lockFactory.DisposeAsync().ConfigureAwait(false);
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
 
         // delegate to handle leader redirection
         internal event Func<CacheLogRecord, CancellationToken, ValueTask<bool>>? RedirectHandler;
-        internal event Func<TimeSpan, CancellationToken, Task<bool>>? ReplicateHandler;
+        internal event Func<CacheLogRecord, CancellationToken, ValueTask>? ReplicateHandler;
 
         public class RemoteUpdateException : Exception
         {
             public RemoteUpdateException(string message) : base(message) { }
         }
 
-        private async Task<long> AppendLocallyAsync(CacheLogRecord newRecord, CancellationToken token)
-        {
-            var newEntry = CreateJsonLogEntry(newRecord);
-            long logIndex = await AppendAsync(newEntry, token).ConfigureAwait(false);
-            _logger.LogDebug($"Log entry #{logIndex} has been added locally.");
-            return logIndex;
-        }
-
-        protected override async ValueTask DisposeAsyncCore()
-        {
-            await _lockFactory.DisposeAsync().ConfigureAwait(false);
-            await base.DisposeAsyncCore().ConfigureAwait(false);
-        }
-
         #region IDistributedCache implementation
 
-        public byte[] Get(string key) => GetAsync(key).Result;
+        public byte[]? Get(string key) => GetAsync(key).Result;
 
-        public async Task<byte[]> GetAsync(string key, CancellationToken token = default)
+        public async Task<byte[]?> GetAsync(string key, CancellationToken token = default)
         {
             _logger.LogDebug($"Reading entry '{key}'");
 
@@ -134,7 +156,7 @@ namespace Slik.Cache
                 var result = await _internalCache.GetAsync(key, token).ConfigureAwait(false);
 
                 // if there is a sliding expiration, refresh it
-                if (_slidingExpirations.Contains(key))
+                if (_slidingExpirations.ContainsKey(key))
                 {
                     _ = BroadcastRefreshAsync(key, token);
                 }
@@ -180,46 +202,30 @@ namespace Slik.Cache
                         {
                             var fallbackValue = await localUpdateAction().ConfigureAwait(false);                            
                             
-                            long logIndex = await AppendLocallyAsync(record, token).ConfigureAwait(false);
-
                             if (ReplicateHandler != null) // not in offline mode
                             {
                                 try
                                 {
-                                    var currentTerm = Term;
-                                    bool replicated = await ReplicateHandler(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
-                                    bool sameTerm = currentTerm == Term;
-
-                                    if (replicated && sameTerm)
-                                    {
-                                        _logger.LogDebug($"Log entry #{logIndex} has been replicated successfully.");
-
-                                        if (await WaitForCommitAsync(logIndex, CommitTimeout, token).ConfigureAwait(false))
-                                        {
-                                            _logger.LogDebug($"Log entry #{logIndex} has been committed successfully.");
-                                        }
-                                        else
-                                            throw new RemoteUpdateException($"Commit with index #{logIndex} unsuccessful.");
-                                    }
-                                    else
-                                        throw new RemoteUpdateException(sameTerm
-                                            ? $"Log entry #{logIndex} was not replicated successfully."
-                                            : $"Term has changed from {currentTerm} to {Term} while replicating.");
+                                    await ReplicateHandler(record, token).ConfigureAwait(false);
                                 }
                                 catch (Exception e)
                                 {
                                     _logger.LogWarning(e,
-                                        $"Error while updating remote storages. Rolling back changes and dropping uncommitted entry #{logIndex}");
+                                        "Error while updating remote storages. Rolling back the uncommitted cache change.");
 
                                     if (record.Operation != CacheOperation.Refresh)
                                     {
                                         if (fallbackValue != null && fallbackValue.Length > 0)
+                                        {
                                             await _internalCache.SetAsync(record.Key, fallbackValue, record.Options ?? new(), token);
+                                            _keys.TryAdd(record.Key, 0);
+                                        }
                                         else
+                                        {
                                             await _internalCache.RemoveAsync(record.Key, token);
+                                            _keys.TryRemove(record.Key, out _);
+                                        }
                                     }
-
-                                    await DropAsync(logIndex, false, token).ConfigureAwait(false);
 
                                     handled = false;
                                 }
@@ -257,7 +263,8 @@ namespace Slik.Cache
                 if (oldValue != null)
                 {
                     await _internalCache.RemoveAsync(key, token).ConfigureAwait(false);
-                    _slidingExpirations.Remove(key);
+                    _keys.TryRemove(key, out _);
+                    _slidingExpirations.TryRemove(key, out _);
                 }
                 return oldValue ?? Array.Empty<byte>();
             }, token).ConfigureAwait(false);
@@ -278,11 +285,12 @@ namespace Slik.Cache
             {
                 var oldValue = await _internalCache.GetAsync(key, token).ConfigureAwait(false);                
                 await _internalCache.SetAsync(key, value, options ?? new(), token);
+                _keys.TryAdd(key, 0);
 
                 if (options?.SlidingExpiration != null)
-                    _slidingExpirations.Add(key);
+                    _slidingExpirations.TryAdd(key, 0);
                 else
-                    _slidingExpirations.Remove(key);
+                    _slidingExpirations.TryRemove(key, out _);
 
                 return oldValue ?? Array.Empty<byte>();
             }, token).ConfigureAwait(false);

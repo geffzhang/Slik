@@ -1,67 +1,89 @@
-using DotNext.IO.Log;
 using DotNext.Net.Cluster.Consensus.Raft;
+using DotNext.Net.Cluster.Consensus.Raft.StateMachine;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Slik.Cache.Tests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
     public class SlikCachePersistentStateTests
     {
         [TestMethod]
-        public async Task InitializeAsync_ExistingLog_AddsItemsCorrectly()
+        public async Task RestoreAsync_SnapshotRestoresUpdatedAndRemovedEntries()
         {
             const string key1 = "key1";
-            byte[] expectedValue1 = new byte[] { 3 };
             const string key2 = "key2";
+            byte[] expectedValue1 = new byte[] { 3 };
+            string logLocation = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
 
-            var records = new CacheLogRecord[]
-            {
-                new CacheLogRecord(CacheOperation.Update, key1, new byte[] { 1 }),
-                new CacheLogRecord(CacheOperation.Update, key2, new byte[] { 2 }),
-                new CacheLogRecord(CacheOperation.Update, key1, expectedValue1),
-                new CacheLogRecord(CacheOperation.Remove, key2, Array.Empty<byte>()),
-            };
-
-            string logLocation = string.Empty;
+            using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
 
             try
             {
-                using (var cache = SlikCacheHelper.InitCache())
-                {
-                    logLocation = cache.LogLocation;
-                    var entries = records.Select(r => (IRaftLogEntry)cache.CreateJsonLogEntry(r)).ToList();
+                var cache = new SlikCache(
+                    Options.Create(new SlikOptions { DataFolder = logLocation }),
+                    loggerFactory);
+                await cache.RestoreAsync(CancellationToken.None);
 
-                    await cache.AppendAsync(new LogEntryProducer<IRaftLogEntry>(entries));
-                    await cache.CommitAsync(CancellationToken.None);
+                await using (var log = new WriteAheadLog(
+                    new WriteAheadLog.Options { Location = cache.LogLocation },
+                    cache))
+                {
+                    await log.InitializeAsync(CancellationToken.None);
+                    await AppendAndCommitAsync(log, new BinaryLogEntry { Term = 1, Content = Array.Empty<byte>() });
+                    await AppendAndCommitAsync(log, new CacheLogRecord(CacheOperation.Update, key1, new byte[] { 1 }));
+                    await AppendAndCommitAsync(log, new CacheLogRecord(CacheOperation.Update, key2, new byte[] { 2 }));
+                    await AppendAndCommitAsync(log, new CacheLogRecord(CacheOperation.Update, key1, expectedValue1));
+                    await AppendAndCommitAsync(log, new CacheLogRecord(CacheOperation.Remove, key2, Array.Empty<byte>()));
+                    await log.FlushAsync(CancellationToken.None);
                 }
 
-                //re-creating the cache from the same path
-                using (var cache = SlikCacheHelper.InitCache(logLocation))
+                await cache.DisposeAsync();
+
+                var restoredCache = new SlikCache(
+                    Options.Create(new SlikOptions { DataFolder = logLocation }),
+                    loggerFactory);
+                await restoredCache.RestoreAsync(CancellationToken.None);
+
+                await using (var restoredLog = new WriteAheadLog(
+                    new WriteAheadLog.Options { Location = restoredCache.LogLocation },
+                    restoredCache))
                 {
-                    await cache.InitializeAsync();
-                    
-                    var actualValue1 = await cache.GetAsync(key1) ?? throw new NullReferenceException(); 
+                    await restoredLog.InitializeAsync(CancellationToken.None);
+
+                    var actualValue1 = await restoredCache.GetAsync(key1) ?? throw new NullReferenceException();
                     Assert.IsTrue(expectedValue1.SequenceEqual(actualValue1));
-
-                    var actualValue2 = await cache.GetAsync(key2);
-                    Assert.IsNull(actualValue2);
+                    Assert.IsNull(await restoredCache.GetAsync(key2));
                 }
+
+                await restoredCache.DisposeAsync();
             }
             finally
             {
-                if (!string.IsNullOrEmpty(logLocation))
+                if (Directory.Exists(logLocation))
                     Directory.Delete(logLocation, true);
             }
+        }
+
+        private static async Task AppendAndCommitAsync(WriteAheadLog log, CacheLogRecord record)
+            => await AppendAndCommitAsync(log, new BinaryLogEntry
+            {
+                Term = 1,
+                Content = JsonSerializer.SerializeToUtf8Bytes(record)
+            });
+
+        private static async Task AppendAndCommitAsync(WriteAheadLog log, BinaryLogEntry entry)
+        {
+            var index = await log.AppendAsync(entry, CancellationToken.None);
+            await log.CommitAsync(index, CancellationToken.None);
+            await log.WaitForApplyAsync(index, CancellationToken.None);
         }
     }
 }

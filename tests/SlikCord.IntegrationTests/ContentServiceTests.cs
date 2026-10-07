@@ -10,15 +10,13 @@ using System.Threading.Tasks;
 namespace Slik.Cord.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class ContentServiceTests : ServiceTestsBase
     {
-        private readonly Content.ContentClient _client = new(Channel);
-        private readonly Random rnd = new();
+    private const string GcRootLabel = "containerd.io/gc.root";
+
+    private readonly Content.ContentClient _client = new(Channel);
+    private readonly Random rnd = new();
             
         private async Task<string> WriteTestObject(AsyncDuplexStreamingCall<WriteContentRequest, WriteContentResponse> streamingCall)
         {
@@ -48,13 +46,14 @@ namespace Slik.Cord.IntegrationTests
             using var streamingCall = _client.Write(Headers);
             string objectRef = await WriteTestObject(streamingCall);
 
-            // commit
-            await streamingCall.RequestStream.WriteAsync(new WriteContentRequest
+            var commitRequest = new WriteContentRequest
             {
                 Action = WriteAction.Commit,
                 Data = GetRandomBytes(),
                 Ref = objectRef
-            });
+            };
+            commitRequest.Labels.Add(GcRootLabel, DateTime.UtcNow.ToString("O"));
+            await streamingCall.RequestStream.WriteAsync(commitRequest);
 
             await streamingCall.RequestStream.CompleteAsync();
 
@@ -77,7 +76,7 @@ namespace Slik.Cord.IntegrationTests
             try
             {               
                 await usageAction(digest);
-            }           
+            }
             finally
             {
                 await _client.DeleteAsync(new DeleteContentRequest { Digest = digest }, Headers);
@@ -140,6 +139,16 @@ namespace Slik.Cord.IntegrationTests
         }
 
         [TestMethod]
+        public async Task CommittedTestContent_IsMarkedAsGcRoot()
+        {
+            await UsingTestObject(async digest =>
+            {
+                var response = await _client.InfoAsync(new InfoRequest { Digest = digest }, Headers);
+                Assert.IsTrue(response.Info.Labels.ContainsKey(GcRootLabel));
+            });
+        }
+
+        [TestMethod]
         public async Task Update_ExistingObject_AddsLabels()
         {
             await UsingTestObject(async digest =>
@@ -153,11 +162,13 @@ namespace Slik.Cord.IntegrationTests
                     UpdateMask = new FieldMask()
                 };
 
+                request.Info.Labels.Add(GcRootLabel, DateTime.UtcNow.ToString("O"));
                 request.Info.Labels.Add(testKey, testValue);
                 request.UpdateMask.Paths.Add("labels");
 
                 var response = await _client.UpdateAsync(request, Headers);
                 Assert.IsTrue(response.Info.Labels[testKey] == testValue);
+                Assert.IsTrue(response.Info.Labels.ContainsKey(GcRootLabel));
             });
         }
 

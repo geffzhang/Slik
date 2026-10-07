@@ -9,17 +9,28 @@ namespace Slik.Cache
     public class NamedLockFactory : IAsyncDisposable
     {
         private readonly ConcurrentDictionary<string, AsyncReaderWriterLock> _locks = new();
-        
-        public async Task<AsyncLock.Holder> AcquireWriteLockAsync(string name, CancellationToken token = default)
+
+        public readonly struct LockScope : IDisposable
         {
-            var namedLock = _locks.GetOrAdd(name, _ => new AsyncReaderWriterLock());
-            return await namedLock.AcquireWriteLockAsync(token);            
+            private readonly AsyncReaderWriterLock? _lock;
+
+            internal LockScope(AsyncReaderWriterLock @lock) => _lock = @lock;
+
+            public void Dispose() => _lock?.Release();
         }
 
-        public async Task<AsyncLock.Holder> AcquireReadLockAsync(string name, CancellationToken token = default)
+        public async Task<LockScope> AcquireWriteLockAsync(string name, CancellationToken token = default)
         {
             var namedLock = _locks.GetOrAdd(name, _ => new AsyncReaderWriterLock());
-            return await namedLock.AcquireReadLockAsync(token);
+            await namedLock.EnterWriteLockAsync(token).ConfigureAwait(false);
+            return new LockScope(namedLock);
+        }
+
+        public async Task<LockScope> AcquireReadLockAsync(string name, CancellationToken token = default)
+        {
+            var namedLock = _locks.GetOrAdd(name, _ => new AsyncReaderWriterLock());
+            await namedLock.EnterReadLockAsync(token).ConfigureAwait(false);
+            return new LockScope(namedLock);
         }
 
         public async ValueTask DisposeAsync()

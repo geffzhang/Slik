@@ -5,7 +5,7 @@
 [![Slik.Cache uses MIT License](https://img.shields.io/github/license/Insvald/Slik)](https://github.com/Insvald/Slik/blob/master/LICENSE)
 
 # Slik.Cache
-Distributed In-process Cache in C# and Net 5.0/6.0 with external gRPC API (HTTP/2, client/server certificates)
+Distributed In-process Cache in C# and .NET 10 with external gRPC API (HTTP/2, client/server certificates)
 
 Based on a [magnificent dotNext library](https://github.com/dotnet/dotNext) and its Raft cluster implementation. 
 
@@ -41,6 +41,12 @@ public class CacheConsumer
 ```
 Update any node, updates are redirected to a cluster leader, and are replicated automatically to each node.
 
+## Compatibility
+
+`Slik.Cache` 3.0.0 and `Slik.Security` 3.0.0 target .NET 10 only. This is a breaking release for applications running older .NET versions.
+
+DotNext storage created by earlier Slik releases is not compatible with the new storage format. Back up existing data before upgrading. Slik stores new cache data under `Cache-v6` and cluster membership data under `Cluster-v6`; it does not automatically migrate or delete older data directories.
+
 ## Sample project: [examples/SlikNode](https://github.com/Insvald/Slik/tree/master/examples/SlikNode)
 
 How to run a minimal cluster: 
@@ -65,7 +71,7 @@ SlikNode --port=3094 --folder="node 3" --members=localhost:3092,localhost:3093,l
 [![Slik.Cord tests](https://github.com/Insvald/Slik/actions/workflows/slik-cord-integration.yml/badge.svg)](https://github.com/Insvald/Slik/actions/workflows/slik-cord-integration.yml)
 # Slik.Cord
 
-A gRPC HTTP proxy for [containerd](https://github.com/containerd/containerd) in C# and Net 5.0/6.0. 
+A gRPC HTTP proxy for [containerd](https://github.com/containerd/containerd) in C# and .NET 10.
 Containerd API works locally via Unix domain socket (in Linux) or named pipe (in Windows), not allowing to connect to it from another computer/container. This proxy can solve the problem.
 **Current implementation doesn't work on Windows.**
 

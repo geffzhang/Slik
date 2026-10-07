@@ -1,4 +1,4 @@
-﻿using Grpc.Net.Client;
+using Grpc.Net.Client;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
 using ProtoBuf.Grpc.Client;
@@ -8,18 +8,15 @@ using System.IO;
 using System.Net.Security;
 using System.Threading.Tasks;
 using TestEnvironment.Docker;
+using TestEnvironment.Docker.ContainerLifecycle;
 
 namespace Slik.Cache.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class SlikCacheLinuxIntegrationTests
     {
-        private static DockerEnvironment? _environment;
+        private static IDockerEnvironment? _environment;
         private static Container? _testContainer;
 
         private const string TestContainerName = "slik-node";
@@ -36,13 +33,19 @@ namespace Slik.Cache.IntegrationTests
 
             // Create the environment using builder pattern.
             _environment = new DockerEnvironmentBuilder()
-                .AddFromDockerfile(TestContainerName, Path.GetFileName(DockerFileName), context: Path.GetDirectoryName(DockerFileName), containerWaiter: new HttpContainerWaiter("/", httpPort: 3092))
+                .AddFromDockerfile(parameters => parameters with
+                {
+                    Name = TestContainerName,
+                    Dockerfile = Path.GetFileName(DockerFileName),
+                    Context = Path.GetDirectoryName(DockerFileName) ?? ".",
+                    ContainerWaiter = new HttpContainerWaiter("/", port: 3092)
+                })
                 //.AddFromDockerfile(TestContainerName2, Path.GetFileName(DockerFileName2), context: Path.GetDirectoryName(DockerFileName2), containerWaiter: new HttpContainerWaiter("/", httpPort: 3093))
                 //.AddFromDockerfile(TestContainerName3, Path.GetFileName(DockerFileName3), context: Path.GetDirectoryName(DockerFileName3), containerWaiter: new HttpContainerWaiter("/", httpPort: 3094))
                 .Build();
 
             // Up it.
-            await _environment.Up();
+            await _environment.UpAsync();
 
             // Play with containers.
             _testContainer = _environment.GetContainer(TestContainerName);
@@ -53,7 +56,7 @@ namespace Slik.Cache.IntegrationTests
         {
             if (_environment != null && _testContainer != null)
             {
-                await _environment.Down();
+                await _environment.DownAsync();
                 await _testContainer.DisposeAsync();
                 await _environment.DisposeAsync();
             }

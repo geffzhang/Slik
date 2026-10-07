@@ -2,7 +2,7 @@
   "profiles": {
     "SlikNode": {
       "commandName": "Project",
-      "commandLineArgs": "--folder=\"bin\\Debug\\net6.0\\node 1\" --testCache"
+      "commandLineArgs": "--folder=\"bin\\Debug\\net10.0\\node 1\" --testCache"
     },
     "Docker": {
       "commandName": "Docker",

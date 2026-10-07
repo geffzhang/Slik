@@ -5,7 +5,6 @@
     <UserSecretsId>e27e68d6-2a71-43c8-a7f8-a3090eb95077</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <DockerfileContext>..\..</DockerfileContext>
-    <DockerfileBuildArguments>--build-arg FRAMEWORK=6.0</DockerfileBuildArguments>
     <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
     <RootNamespace>Slik.Cord</RootNamespace>
     <Nullable>enable</Nullable>

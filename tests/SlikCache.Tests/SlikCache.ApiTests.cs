@@ -7,11 +7,7 @@ using System.Threading.Tasks;
 namespace Slik.Cache.Tests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class SlikCacheApiTests
     {
         private readonly SlikCache _cache = SlikCacheHelper.InitCache(); 

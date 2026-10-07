@@ -1,4 +1,4 @@
-﻿using Containerd.Services.Images.V1;
+using Containerd.Services.Images.V1;
 using Containerd.Types;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -9,11 +9,7 @@ using System.Threading.Tasks;
 namespace Slik.Cord.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class ImageServiceTests : ServiceTestsBase
     {
         private readonly Images.ImagesClient _client = new(Channel);

@@ -24,8 +24,9 @@ namespace Slik.Cache.Tests
         public static void DestroyCache(SlikCache cache)
         {
             string logLocation = cache.LogLocation;
-            cache.Dispose();
-            Directory.Delete(logLocation, true);
+            cache.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            if (Directory.Exists(logLocation))
+                Directory.Delete(logLocation, true);
         }
     }
 }

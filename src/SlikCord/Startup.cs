@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -61,7 +62,7 @@ namespace Slik.Cord
                     .ConfigureAppConfiguration(builder => builder.AddInMemoryCollection(config))
                     .ConfigureWebHostDefaults(webBuilder => webBuilder.UseStartup<Startup>().ConfigureKestrel((_, serverOptions) => 
                     {
-                        serverOptions.ListenAnyIP(options.Port);
+                        serverOptions.ListenAnyIP(options.Port, listenOptions => listenOptions.Protocols = HttpProtocols.Http2);
                     }))                    
                     .Build()
                     .RunAsync();

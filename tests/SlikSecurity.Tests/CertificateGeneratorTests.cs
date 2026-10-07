@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
 using System.Linq;
@@ -9,11 +9,7 @@ using System.Threading.Tasks;
 namespace Slik.Security.Tests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class CertificateGeneratorTests
     {
         private readonly X509Certificate2 _rootCertificate;

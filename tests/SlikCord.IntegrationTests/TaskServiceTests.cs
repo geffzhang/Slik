@@ -11,11 +11,7 @@ using System.Threading.Tasks;
 namespace Slik.Cord.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class TaskServiceTests : ServiceTestsBase
     {
         private readonly ContainerFactory _factory;

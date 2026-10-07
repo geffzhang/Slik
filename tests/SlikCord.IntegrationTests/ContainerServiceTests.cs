@@ -1,4 +1,4 @@
-﻿using Containerd.Services.Containers.V1;
+using Containerd.Services.Containers.V1;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -12,11 +12,7 @@ using System.Threading.Tasks;
 namespace Slik.Cord.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class ContainerServiceTests : ServiceTestsBase
     {
         private readonly Containers.ContainersClient _client = new(Channel);

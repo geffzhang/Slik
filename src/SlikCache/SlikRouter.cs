@@ -4,7 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -88,7 +90,7 @@ namespace Slik.Cache
             {
                 _logger.LogDebug($"Relaying to the leader, apparently {leader.EndPoint}");
                 string response = await _messageBus.LeaderRouter
-                    .SendMessageAsync(new JsonMessage<T>(messageName, record), MessageReader, token)
+                    .SendMessageAsync(new TextMessage(JsonSerializer.Serialize(record), messageName), MessageReader, token)
                     .ConfigureAwait(false);
 
                 if (response == OK)
@@ -146,8 +148,8 @@ namespace Slik.Cache
             }
         }
 
-        public async Task<bool> ReplicateAsync(TimeSpan timeout, CancellationToken token) =>
-            await _cluster.ForceReplicationAsync(timeout, token).ConfigureAwait(false);
+        public ValueTask ReplicateAsync(CacheLogRecord record, CancellationToken token) =>
+            _cluster.ReplicateAsync(JsonSerializer.SerializeToUtf8Bytes(record), token: token);
 
         #region IInputChannel implementation
         public async Task<IMessage> ReceiveMessage(ISubscriber sender, IMessage message, object? context, CancellationToken token)
@@ -159,8 +161,9 @@ namespace Slik.Cache
                 switch (message.Name)
                 {
                     case CacheRequestMessage:
-                        var cacheRecord = await JsonMessage<CacheLogRecord>.FromJsonAsync(message, token).ConfigureAwait(false)
-                            ?? throw new Exception($"empty message");
+                        var cacheRecord = JsonSerializer.Deserialize<CacheLogRecord>(
+                            await message.ReadAsTextAsync(token).ConfigureAwait(false))
+                            ?? throw new InvalidDataException("Empty cache record message.");
 
                         // check if the current node is the leader
                         if (_messageBus.Leader?.IsRemote == false)
@@ -178,8 +181,9 @@ namespace Slik.Cache
                         }
                         break;
                     case MemberRequestMessage:
-                        var membershipRecord = await JsonMessage<MembershipChangeRecord>.FromJsonAsync(message, token).ConfigureAwait(false)
-                                ?? throw new Exception($"empty message");
+                        var membershipRecord = JsonSerializer.Deserialize<MembershipChangeRecord>(
+                            await message.ReadAsTextAsync(token).ConfigureAwait(false))
+                            ?? throw new InvalidDataException("Empty membership record message.");
 
                         // check if the current node is the leader
                         if (_messageBus.Leader?.IsRemote == false)

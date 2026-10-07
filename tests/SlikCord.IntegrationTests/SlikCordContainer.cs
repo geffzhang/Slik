@@ -11,13 +11,8 @@ namespace Slik.Cord.IntegrationTests
     
     public class SlikCordContainer
     {
-#if NET5_0
-        private const string NetFramework = "5.0";
+        private const string NetFramework = "10.0";
         public const ushort HostPort = 3099;
-#else
-        private const string NetFramework = "6.0";
-        public const ushort HostPort = 3098;
-#endif
         
         public const ushort ContainerPort = 3100;
         public readonly string ImageName = $"test-slik-cord:{NetFramework}";
@@ -64,8 +59,7 @@ namespace Slik.Cord.IntegrationTests
             await docker.BuildAsync(
                 tag: ImageName,
                 folder: "..\\..\\..\\..\\..",
-                "src/SlikCord/Dockerfile",
-                $"FRAMEWORK={NetFramework}");
+                "src/SlikCord/Dockerfile");
 
             Console.WriteLine($"Running the container '{ContainerId}'.");
             await docker.RunAsync(ContainerId, ImageName, $"{HostPort}:{ContainerPort}");
@@ -76,39 +70,40 @@ namespace Slik.Cord.IntegrationTests
 
         private async Task WaitForHttpEndpointAsync(TimeSpan timeout)
         {
-            using var client = new HttpClient { Timeout = timeout };
+            using var client = new HttpClient();
             using var cts = new CancellationTokenSource(timeout);
+            Exception? lastException = null;
 
-            // waiting for http endpoint
-            do
+            while (!cts.IsCancellationRequested)
             {
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{HostPort}")
+                {
+                    Version = HttpVersion.Version20,
+                    VersionPolicy = HttpVersionPolicy.RequestVersionExact
+                };
+
                 try
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{HostPort}");
-                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-                    if (response.StatusCode == HttpStatusCode.OK)
-                    {
+                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                    if (response.Version == HttpVersion.Version20)
                         _isContainerReady = true;
-                        break;
-                    }
+
+                    if (_isContainerReady)
+                        return;
                 }
-                catch (HttpRequestException e) when (e.InnerException is SocketException socketEx && socketEx.ErrorCode == 10061)
+                catch (HttpRequestException exception)
                 {
-                    // "No connection could be made because the target machine actively refused it"
-                    // means that the container is still warming up
-                    continue;
+                    lastException = exception;
                 }
-                catch (HttpRequestException e) when (e.InnerException is IOException ioEx && (uint)ioEx.HResult == 0x80131620)
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
                 {
-                    // "The response ended prematurely."
-                    // for some reason GET handler doesn't work properly
-                    _isContainerReady = true;
                     break;
                 }
-            } while (!cts.IsCancellationRequested);
 
-            // http becomes available a little bit early, need to wait more for gRPC channel
-            await Task.Delay(TimeSpan.FromSeconds(2));
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cts.Token);
+            }
+
+            throw new TimeoutException("The Slik.Cord container did not establish an HTTP/2 connection before the startup timeout.", lastException);
         }
 
         public async Task RemoveContainerAsync()

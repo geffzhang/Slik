@@ -43,12 +43,11 @@ namespace Slik.Cord.IntegrationTests
                 throw new Exception($"Process exit code indicates failure: {process.ExitCode}");
         }
 
-        public async Task BuildAsync(string tag, string folder, string dockerFile = "Dockerfile", string buildArgs = "")
+        public async Task BuildAsync(string tag, string folder, string dockerFile = "Dockerfile")
         {
             folder = Path.GetFullPath(folder);
             dockerFile = Path.GetFullPath(Path.Combine(folder, dockerFile));
-            buildArgs = string.IsNullOrWhiteSpace(buildArgs) ? "" : $"--build-arg {buildArgs}";
-            await ExecuteDockerCommandAsync($"build {folder} --tag {tag} --file {dockerFile} {buildArgs}").ConfigureAwait(false);
+            await ExecuteDockerCommandAsync($"build {folder} --tag {tag} --file {dockerFile}").ConfigureAwait(false);
         }
 
         public async Task RunAsync(string name, string image, string? ports = null)

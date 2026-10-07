@@ -7,16 +7,12 @@ using System.Threading.Tasks;
 namespace Slik.Cache.Tests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+    [TestCategory(".NET 10")]
     public class NamedLockFactoryTests
     {
         private static async Task<Tuple<bool, bool>> ExecuteTwoTasksWithLocks(
-            Func<NamedLockFactory, Task<AsyncLock.Holder>> firstLockFunction, 
-            Func<NamedLockFactory, Task<AsyncLock.Holder>> secondLockFunction)
+            Func<NamedLockFactory, Task<NamedLockFactory.LockScope>> firstLockFunction,
+            Func<NamedLockFactory, Task<NamedLockFactory.LockScope>> secondLockFunction)
         {
             bool firstTaskEntered = false;
             bool secondTaskEntered = false;

@@ -9,11 +9,7 @@ using System.Threading.Tasks;
 namespace Slik.Cord.IntegrationTests
 {
     [TestClass]
-#if NET5_0
-    [TestCategory(".Net 5")]
-#else
-    [TestCategory(".Net 6")]
-#endif
+[TestCategory(".NET 10")]
     public class NamespaceServiceTests : ServiceTestsBase
     {
         private readonly Namespaces.NamespacesClient _client = new(Channel);
